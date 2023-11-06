@@ -8,6 +8,8 @@
 import SwiftUI
 import PhotosUI
 import Firebase
+import FirebaseFirestore
+import FirebaseStorage
 
 struct LoginView: View {
     @State var emailID: String = ""
@@ -15,6 +17,12 @@ struct LoginView: View {
     @State var createAccount: Bool = false
     @State var showError: Bool = false
     @State var errorMessage: String = ""
+    @State var isLoading: Bool = false
+    //Userdefaults
+    @AppStorage("log_status") var logStatus: Bool = false
+    @AppStorage("user_profile_url") var profileURL: URL?
+    @AppStorage("user_name") var storedUsername: String = ""
+    @AppStorage("user_UID") var userUID: String = ""
     
     var body: some View {
         VStack(spacing: 12) {
@@ -37,7 +45,7 @@ struct LoginView: View {
                     .border(1, .gray.opacity(0.5))
                 
                 Button("Reset password", action: {
-                    loginUser()
+                    resetPassword()
                 })
                     .font(.callout)
                     .fontWeight(.medium)
@@ -51,7 +59,6 @@ struct LoginView: View {
                         .fillView(.black)
                 }
                 .padding(.top, 10)
-                
                 
             }
             HStack {
@@ -69,6 +76,9 @@ struct LoginView: View {
         }
         .vAlignment(.top)
         .padding(15)
+        .overlay(content: {
+            LoadingView(show: $isLoading)
+        })
         .fullScreenCover(isPresented: $createAccount) {
             RegisterView()
         }
@@ -76,9 +86,23 @@ struct LoginView: View {
     }
     
     func loginUser() {
+        isLoading = true
+        closeKeyboard()
         Task {
             do {
                 try await Auth.auth().signIn(withEmail: emailID, password: password)
+                print("User found")
+                try await fetchUser()
+            } catch {
+                await setError(error)
+            }
+        }
+    }
+    
+    func resetPassword() {
+        Task {
+            do {
+                try await Auth.auth().sendPasswordReset(withEmail: emailID)
             } catch {
                 await setError(error)
             }
@@ -89,6 +113,19 @@ struct LoginView: View {
         await MainActor.run(body: {
             errorMessage = error.localizedDescription
             showError.toggle()
+            isLoading = false
+        })
+    }
+    
+    //If the user is found then fetching the users from db
+    func fetchUser() async throws {
+        guard let userID = Auth.auth().currentUser?.uid else { return }
+        let user = try await Firestore.firestore().collection("Users").document(userID).getDocument(as: User.self)
+        await MainActor.run(body: {
+            userUID = userID
+            storedUsername = user.username
+            profileURL = user.userProfileURL
+            logStatus = true
         })
     }
 }
@@ -99,145 +136,3 @@ struct LoginView_Previews: PreviewProvider {
     }
 }
 
-struct RegisterView: View {
-    @State var emailID: String = ""
-    @State var password: String = ""
-    @State var userName: String = ""
-    @State var userBio: String = ""
-    @State var userProfilePicData: Data?
-    @Environment(\.dismiss) var dismiss
-    @State var showImagePicker: Bool = false
-    @State var photoItem: PhotosPickerItem?
-    var body: some View {
-        VStack(spacing: 12) {
-            Text("Let's register\nAccount")
-                .font(.largeTitle.bold())
-                .hAlignment(.leading)
-            
-            Text("Hello, have a wonderful journey!")
-                .font(.title3)
-                .hAlignment(.leading)
-            
-            ViewThatFits {
-                ScrollView(.vertical, showsIndicators: false) {
-                    helperView()
-                }
-                helperView()
-            }
-            
-            HStack {
-                Text("Already have an account?")
-                    .foregroundColor(.gray)
-                
-                Button("Login now") {
-                    dismiss()
-                }
-                .fontWeight(.bold)
-                .foregroundColor(.black)
-            }
-            .font(.callout)
-            .vAlignment(.bottom)
-        }
-        .vAlignment(.top)
-        .padding(15)
-        .photosPicker(isPresented: $showImagePicker, selection: $photoItem)
-        .onChange(of: photoItem) { newPhoto in
-            if let newPhoto {
-                Task {
-                    do {
-                        guard let imageData = try await newPhoto.loadTransferable(type: Data.self) else { return }
-                        await MainActor.run(body: {
-                            userProfilePicData = imageData
-                        })
-                    } catch {}
-                }
-            }
-        }
-    }
-    
-    @ViewBuilder
-    func helperView() -> some View {
-        VStack(spacing: 12) {
-            ZStack {
-                if let userProfilePicData,
-                   let image = UIImage(data: userProfilePicData) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    Image(systemName: "person.crop.circle")
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                }
-            }
-            .frame(width: 85, height: 85)
-            .clipShape(Circle())
-            .contentShape(Circle())
-            .padding(.top, 25)
-            .onTapGesture {
-                showImagePicker.toggle()
-            }
-            
-            VStack(spacing: 12) {
-                TextField("Username", text: $userName)
-                    .textContentType(.emailAddress)
-                    .border(1, .gray.opacity(0.5))
-                
-                TextField("Email", text: $emailID)
-                    .textContentType(.emailAddress)
-                    .border(1, .gray.opacity(0.5))
-                
-                SecureField("Password", text: $password)
-                    .textContentType(.emailAddress)
-                    .border(1, .gray.opacity(0.5))
-                
-                TextField("About you", text: $userBio, axis: .vertical)
-                    .frame(minHeight: 100, alignment: .top)
-                    .textContentType(.emailAddress)
-                    .border(1, .gray.opacity(0.5))
-                
-                Button {
-                    
-                } label: {
-                    Text("Sign up")
-                        .foregroundColor(.white)
-                        .hAlignment(.center)
-                        .fillView(.black)
-                    
-                }
-                .padding(.top, 10)
-            
-            }
-        }
-    }
-}
-
-extension View {
-    func hAlignment(_ alignment: Alignment) -> some View {
-        self.frame(maxWidth: .infinity, alignment: alignment)
-    }
-    
-    func vAlignment(_ alignment: Alignment) -> some View {
-        self.frame(maxHeight: .infinity, alignment: alignment)
-    }
-    
-    func border(_ width: CGFloat, _ color: Color) -> some View {
-        self
-            .padding(.horizontal, 15)
-            .padding(.vertical, 10)
-            .background {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .stroke(color, lineWidth: width)
-            }
-    }
-    
-    func fillView(_ color: Color) -> some View {
-        self
-            .padding(.horizontal, 15)
-            .padding(.vertical, 10)
-            .background {
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(color)
-            }
-    }
-}
